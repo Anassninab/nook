@@ -1,0 +1,7 @@
+Nook 0.3.9
+
+- **What's new card**: after every update Nook now shows what changed, right under the notch.
+- **Brightness**: a brightness popup when you change it (laptops), and a Brightness option for the island circle.
+- **Lyrics retry**: if a song's lyrics aren't found the first time, Nook tries again a few times before giving up.
+- **Smoother animation** and lighter drawing.
+- **New Settings layout** with a sidebar of icons, sections and a banner.
