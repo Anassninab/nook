@@ -1,6 +1,6 @@
-﻿[package]
+[package]
 name = "nook"
-version = "0.3.9"
+version = "0.3.10"
 edition = "2021"
 description = "A living notch for Windows (clean-room Rust implementation)"
 

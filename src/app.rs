@@ -225,6 +225,7 @@ pub struct App {
     pub blank_since: Option<Instant>,
     pub chat_scroll: Cell<f32>,
     pub pray_scroll: Ease,
+    pub dock_hover: Spring,
 }
 
 static mut APP: *mut App = std::ptr::null_mut();
@@ -400,6 +401,7 @@ impl App {
             blank_since: None,
             chat_scroll: Cell::new(0.0),
             pray_scroll: Ease::new(0.0, 16.0),
+            dock_hover: Spring::with(0.0, 16.0, 0.76),
         };
         unsafe {
             let _ = AddClipboardFormatListener(hwnd);
@@ -840,6 +842,28 @@ impl App {
         self.lyric_slide.step(dt);
         self.split.step(dt);
         self.pray_scroll.step(dt);
+
+        let kinds = self.pages();
+        let total = (kinds.len() as f32) * 33.0 + 10.0 + 33.0;
+        let cx = WIN_W / 2.0;
+        let yo = self.y_off.value;
+        let cy = yo + EXP_H - 17.0;
+        let dock_zone = Rect {
+            x: cx - total / 2.0 - 16.0,
+            y: cy - 14.0,
+            w: total + 32.0,
+            h: 34.0,
+        };
+        let dock_hot = self.expanded && kinds.len() > 1 && !self.vol_drag && self.seek_drag.is_none() && dock_zone.contains(self.mouse.0, self.mouse.1);
+        let tgt = if dock_hot { 1.0 } else { 0.0 };
+        if (self.dock_hover.target - tgt).abs() > 0.01 {
+            self.dock_hover.set(tgt);
+            self.dirty.set(true);
+        }
+        if !self.expanded {
+            self.dock_hover.snap(0.0);
+        }
+        self.dock_hover.step(dts);
         if !self.expanded {
             self.pray_pick = false;
         }
@@ -854,7 +878,7 @@ impl App {
             self.bars[i] += (tgt - self.bars[i]) * (1.0 - (-14.0 * dt).exp());
         }
 
-        let animating = !(self.w.settled() && self.h.settled() && self.page_pos.settled() && self.y_off.settled() && self.lyric_slide.settled() && self.split.settled() && self.pray_scroll.settled() && !touring);
+        let animating = !(self.w.settled() && self.h.settled() && self.page_pos.settled() && self.y_off.settled() && self.lyric_slide.settled() && self.split.settled() && self.pray_scroll.settled() && self.dock_hover.settled() && !touring);
         let visual_live = self.ai_busy() || self.tour.is_some() || self.expanded || playing || self.toast.is_some() || self.hud.is_some() || self.drag_hover;
         let idle_anim = self.settings.idle_scenes && !self.expanded && !playing && !self.timer_active();
         let fading = idle_anim && {
@@ -1433,46 +1457,121 @@ impl App {
         }
     }
 
-    /// Always-visible page dock: icons plus a coloured capsule that glides to the current page.
+    /// Bottom page indicator: minimal dots + active dash by default (Image 1),
+    /// smoothly animating and morphing into the full dock bar on hover (Image 2).
     fn draw_dock(&self, kinds: &[PageKind], cx: f32, cy: f32, a: f32) {
         let g = &self.gfx;
-        let slot = 33.0;
-        let n = kinds.len() as f32;
-        let total = n * slot + 10.0 + slot;
-        let x0 = cx - total / 2.0;
-        g.fill_round(x0 - 7.0, cy - 13.0, total + 14.0, 26.0, 13.0, WHITE.a(0.05 * a));
-        g.stroke_round(x0 - 7.0, cy - 13.0, total + 14.0, 26.0, 13.0, 1.0, WHITE.a(0.10 * a));
-        // sliding selection capsule (colour blends between neighbouring pages)
-        let pp = self.page_pos.value.clamp(0.0, n - 1.0);
-        let (i0, i1) = (pp.floor() as usize, (pp.ceil() as usize).min(kinds.len() - 1));
-        let col = Self::tab_color(kinds[i0]).mix(Self::tab_color(kinds[i1]), pp - pp.floor());
-        let ccx = x0 + pp * slot + slot / 2.0;
-        g.fill_round(ccx - 15.0, cy - 10.5, 30.0, 21.0, 10.5, col.a(0.20 * a));
-        g.stroke_round(ccx - 15.0, cy - 10.5, 30.0, 21.0, 10.5, 1.0, col.a(0.55 * a));
-        for (i, k) in kinds.iter().enumerate() {
-            let c = x0 + i as f32 * slot + slot / 2.0;
-            let active = (self.page_pos.value - i as f32).abs() < 0.5;
-            let r = Rect { x: c - 15.0, y: cy - 13.0, w: 30.0, h: 26.0 };
-            let hot = self.hovered(r);
-            let ic = if active { Self::tab_color(*k) } else { WHITE.a(if hot { 0.95 } else { 0.55 }) }.a(a);
-            match k {
-                PageKind::Water => self.drop_icon(c, cy, ic),
-                PageKind::Media => g.icon('\u{E8D6}', c, cy, 13.0, ic),
-                PageKind::Widgets => g.icon('\u{E8A9}', c, cy, 13.0, ic),
-                PageKind::Calendar => g.icon('\u{E787}', c, cy, 13.0, ic),
-                PageKind::Focus => g.icon('\u{E916}', c, cy, 13.0, ic),
-                PageKind::Shelf => g.icon('\u{E8B7}', c, cy, 13.0, ic),
-                PageKind::Todo => g.icon('\u{E73A}', c, cy, 13.0, ic),
-                PageKind::Prayer => g.icon('\u{E708}', c, cy, 13.0, ic),
-                PageKind::Assistant => self.sparkle(c, cy, 7.5, ic),
-            }
-            self.hit(r, Act::Dot(i));
+        let dock_t = self.dock_hover.value.clamp(0.0, 1.0);
+        let n = kinds.len();
+        let pp = self.page_pos.value.clamp(0.0, (n - 1) as f32);
+
+        // 1. Calculate dots dimensions and positions
+        let gap = 5.5;
+        let mut dot_widths = vec![3.5f32; n];
+        for i in 0..n {
+            let diff = (pp - i as f32).abs();
+            let active_weight = (1.0 - diff).clamp(0.0, 1.0);
+            dot_widths[i] = 3.5 + (16.0 - 3.5) * active_weight;
         }
-        g.fill_rect(x0 + n * slot + 4.0, cy - 7.0, 1.0, 14.0, WHITE.a(0.16 * a));
-        let gx = x0 + n * slot + 10.0 + slot / 2.0;
-        let r = Rect { x: gx - 15.0, y: cy - 13.0, w: 30.0, h: 26.0 };
-        g.icon('\u{E713}', gx, cy, 13.0, WHITE.a(if self.hovered(r) { 1.0 } else { 0.6 } * a));
-        self.hit(r, Act::Settings);
+        let total_dots_w: f32 = dot_widths.iter().sum::<f32>() + (n as f32 - 1.0) * gap;
+
+        // 2. Calculate full dock dimensions
+        let slot = 33.0;
+        let n_f = n as f32;
+        let total = n_f * slot + 10.0 + slot;
+        let full_w = total + 14.0;
+        let x0 = cx - total / 2.0;
+
+        // 3. Dynamic morphing pill container (expands horizontally and vertically from dots)
+        let cur_w = lerp(total_dots_w + 14.0, full_w, smoothstep(0.0, 1.0, dock_t));
+        let cur_h = lerp(16.0, 26.0, smoothstep(0.0, 1.0, dock_t));
+        let cur_r = cur_h / 2.0;
+        let cur_x = cx - cur_w / 2.0;
+        let cur_y = cy - cur_h / 2.0;
+        let bg_a = smoothstep(0.06, 0.70, dock_t) * a;
+        if bg_a > 0.01 {
+            g.fill_round(cur_x, cur_y, cur_w, cur_h, cur_r, Color::rgba(18, 18, 22, 0.90 * bg_a));
+            g.fill_round(cur_x, cur_y, cur_w, cur_h, cur_r, WHITE.a(0.05 * bg_a));
+            g.stroke_round(cur_x, cur_y, cur_w, cur_h, cur_r, 1.0, WHITE.a(0.12 * bg_a));
+        }
+
+        // 4. Compact dots + active dash indicator (fades out as dock opens)
+        let dot_a = (1.0 - smoothstep(0.0, 0.40, dock_t)) * a;
+        if dot_a > 0.01 {
+            let mut cur_dx = cx - total_dots_w / 2.0;
+            for (i, &w_i) in dot_widths.iter().enumerate() {
+                let diff = (pp - i as f32).abs();
+                let active_weight = (1.0 - diff).clamp(0.0, 1.0);
+                let col = WHITE.a((0.38 + 0.57 * active_weight) * dot_a);
+                g.fill_round(cur_dx, cy - 1.75, w_i, 3.5, 1.75, col);
+                if dock_t <= 0.5 {
+                    let r = Rect { x: cur_dx - 3.0, y: cy - 10.0, w: w_i + 6.0, h: 20.0 };
+                    self.hit(r, Act::Dot(i));
+                }
+                cur_dx += w_i + gap;
+            }
+        }
+
+        // 5. Full dock icons, selection capsule, and settings gear (animates in)
+        let full_a = smoothstep(0.20, 0.90, dock_t) * a;
+        if full_a > 0.01 {
+            let enter_scale = lerp(0.70, 1.0, smoothstep(0.15, 1.0, dock_t));
+            let enter_dy = (1.0 - smoothstep(0.15, 1.0, dock_t)) * 4.0;
+            let icon_cy = cy + enter_dy;
+
+            // Sliding selection capsule (colour blends between neighbouring pages)
+            let (i0, i1) = (pp.floor() as usize, (pp.ceil() as usize).min(kinds.len() - 1));
+            let col = Self::tab_color(kinds[i0]).mix(Self::tab_color(kinds[i1]), pp - pp.floor());
+            let ccx = x0 + pp * slot + slot / 2.0;
+            let cap_w = 30.0 * enter_scale;
+            let cap_h = 21.0 * enter_scale;
+            let cap_r = cap_h / 2.0;
+            g.fill_round(ccx - cap_w / 2.0, icon_cy - cap_h / 2.0, cap_w, cap_h, cap_r, col.a(0.20 * full_a));
+            g.stroke_round(ccx - cap_w / 2.0, icon_cy - cap_h / 2.0, cap_w, cap_h, cap_r, 1.0, col.a(0.60 * full_a));
+
+            for (i, k) in kinds.iter().enumerate() {
+                let c = x0 + i as f32 * slot + slot / 2.0;
+                let active = (self.page_pos.value - i as f32).abs() < 0.5;
+                let r = Rect { x: c - 15.0, y: cy - 13.0, w: 30.0, h: 26.0 };
+                let hot = self.hovered(r);
+                if hot && !active && dock_t > 0.6 {
+                    g.fill_round(c - 13.0, cy - 10.5, 26.0, 21.0, 10.5, WHITE.a(0.08 * a));
+                }
+                let icon_size = 13.0 * enter_scale * if hot { 1.12 } else { 1.0 };
+                let ic = if active { Self::tab_color(*k) } else { WHITE.a(if hot { 1.0 } else { 0.55 }) }.a(full_a);
+                match k {
+                    PageKind::Water => self.drop_icon(c, icon_cy, ic),
+                    PageKind::Media => g.icon('\u{E8D6}', c, icon_cy, icon_size, ic),
+                    PageKind::Widgets => g.icon('\u{E8A9}', c, icon_cy, icon_size, ic),
+                    PageKind::Calendar => g.icon('\u{E787}', c, icon_cy, icon_size, ic),
+                    PageKind::Focus => g.icon('\u{E916}', c, icon_cy, icon_size, ic),
+                    PageKind::Shelf => g.icon('\u{E8B7}', c, icon_cy, icon_size, ic),
+                    PageKind::Todo => g.icon('\u{E73A}', c, icon_cy, icon_size, ic),
+                    PageKind::Prayer => g.icon('\u{E708}', c, icon_cy, icon_size, ic),
+                    PageKind::Assistant => self.sparkle(c, icon_cy, 7.5 * enter_scale * if hot { 1.12 } else { 1.0 }, ic),
+                }
+                if dock_t > 0.5 {
+                    self.hit(r, Act::Dot(i));
+                }
+            }
+
+            // Divider line
+            let div_h = 14.0 * smoothstep(0.25, 1.0, dock_t);
+            g.fill_rect(x0 + n_f * slot + 4.0, cy - div_h / 2.0, 1.0, div_h, WHITE.a(0.16 * full_a));
+
+            // Settings button
+            let gx = x0 + n_f * slot + 10.0 + slot / 2.0;
+            let r_set = Rect { x: gx - 15.0, y: cy - 13.0, w: 30.0, h: 26.0 };
+            let set_hot = self.hovered(r_set);
+            if set_hot && dock_t > 0.6 {
+                g.fill_round(gx - 13.0, cy - 10.5, 26.0, 21.0, 10.5, WHITE.a(0.08 * a));
+            }
+            let gear_size = 13.0 * enter_scale * if set_hot { 1.12 } else { 1.0 };
+            g.icon('\u{E713}', gx, icon_cy, gear_size, WHITE.a(if set_hot { 1.0 } else { 0.6 } * full_a));
+            if dock_t > 0.5 {
+                self.hit(r_set, Act::Settings);
+            }
+        }
     }
 
     pub fn drop_icon(&self, c: f32, cy: f32, col: Color) {
