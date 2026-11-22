@@ -225,6 +225,9 @@ pub struct App {
     pub blank_since: Option<Instant>,
     pub chat_scroll: Cell<f32>,
     pub pray_scroll: Ease,
+    pub todo_scroll: Ease,
+    pub todo_hy: Ease,
+    pub todo_ha: Ease,
     pub dock_hover: Spring,
 }
 
@@ -401,6 +404,9 @@ impl App {
             blank_since: None,
             chat_scroll: Cell::new(0.0),
             pray_scroll: Ease::new(0.0, 16.0),
+            todo_scroll: Ease::new(0.0, 16.0),
+            todo_hy: Ease::new(0.0, 28.0),
+            todo_ha: Ease::new(0.0, 22.0),
             dock_hover: Spring::with(0.0, 16.0, 0.76),
         };
         unsafe {
@@ -542,8 +548,8 @@ impl App {
     }
 
     pub fn collapsed_size(&self) -> (f32, f32) {
-        if self.toast.is_some() {
-            return (340.0, 76.0);
+        if let Some(t) = &self.toast {
+            return if t.tag == 3 { (392.0, 100.0) } else { (340.0, 76.0) };
         }
         if let Some((k, _, _)) = self.hud {
             let _ = k;
@@ -553,7 +559,7 @@ impl App {
             return if self.settings.island { (190.0, 36.0) } else { (200.0, 32.0) };
         }
         if self.settings.dot_mode && !self.ai_busy() && self.tour.is_none() {
-            return if self.settings.island { (8.0, 8.0) } else { (12.0, 4.0) }; // sleek tiny dot until hovered / clicked
+            return if self.settings.island { (30.0, 17.0) } else { (32.0, 11.0) }; // small face-pill until hovered / clicked
         }
         let playing = self.is_playing();
         let isl = self.settings.island;
@@ -842,6 +848,30 @@ impl App {
         self.lyric_slide.step(dt);
         self.split.step(dt);
         self.pray_scroll.step(dt);
+        self.todo_scroll.step(dt);
+        {
+            // smooth sliding hover pill for the task list
+            let n = self.store.todos.len();
+            let mut on = false;
+            if self.expanded && self.tour.is_none() && n > 0 && self.pages().get(self.page) == Some(&PageKind::Todo) {
+                let (mx, my) = self.mouse;
+                let l = WIN_W / 2.0 - EXP_W / 2.0 + PAGE_PAD;
+                let py = self.y_off.value + 32.0;
+                let sc = self.todo_scroll.value;
+                let row = ((my - (py + 10.0) + sc) / 23.0).floor();
+                if mx > l + 212.0 && mx < l + 392.0 && my > py + 6.0 && my < py + 76.0 && row >= 0.0 && (row as usize) < n {
+                    let ty = py + 20.0 + row * 23.0 - sc;
+                    if self.todo_ha.value < 0.05 {
+                        self.todo_hy.value = ty;
+                    }
+                    self.todo_hy.target = ty;
+                    on = true;
+                }
+            }
+            self.todo_ha.target = if on { 1.0 } else { 0.0 };
+            self.todo_hy.step(dt);
+            self.todo_ha.step(dt);
+        }
 
         let kinds = self.pages();
         let total = (kinds.len() as f32) * 33.0 + 10.0 + 33.0;
@@ -854,7 +884,12 @@ impl App {
             w: total + 32.0,
             h: 34.0,
         };
-        let dock_hot = self.expanded && kinds.len() > 1 && !self.vol_drag && self.seek_drag.is_none() && dock_zone.contains(self.mouse.0, self.mouse.1);
+        let force_dock = std::env::var_os("NOOK_DEBUG_DOCK").is_some();
+        let dock_hot = self.expanded
+            && kinds.len() > 1
+            && !self.vol_drag
+            && self.seek_drag.is_none()
+            && (force_dock || dock_zone.contains(self.mouse.0, self.mouse.1));
         let tgt = if dock_hot { 1.0 } else { 0.0 };
         if (self.dock_hover.target - tgt).abs() > 0.01 {
             self.dock_hover.set(tgt);
@@ -878,7 +913,7 @@ impl App {
             self.bars[i] += (tgt - self.bars[i]) * (1.0 - (-14.0 * dt).exp());
         }
 
-        let animating = !(self.w.settled() && self.h.settled() && self.page_pos.settled() && self.y_off.settled() && self.lyric_slide.settled() && self.split.settled() && self.pray_scroll.settled() && self.dock_hover.settled() && !touring);
+        let animating = !(self.w.settled() && self.h.settled() && self.page_pos.settled() && self.y_off.settled() && self.lyric_slide.settled() && self.split.settled() && self.pray_scroll.settled() && self.todo_scroll.settled() && self.todo_hy.settled() && self.todo_ha.settled() && self.todo_ha.target < 0.5 && !self.toast.as_ref().map(|t| t.tag == 3).unwrap_or(false) && self.dock_hover.settled() && !touring);
         let visual_live = self.ai_busy() || self.tour.is_some() || self.expanded || playing || self.toast.is_some() || self.hud.is_some() || self.drag_hover;
         let idle_anim = self.settings.idle_scenes && !self.expanded && !playing && !self.timer_active();
         let fading = idle_anim && {
@@ -888,6 +923,8 @@ impl App {
         let since = now.duration_since(self.last_render);
         let due = animating
             || (fading && since > Duration::from_millis(16))
+            || ((self.eyelid() > 0.0 && (self.settings.dot_mode || self.settings.mascot) && !self.expanded) && since > Duration::from_millis(16))
+            || (self.settings.dot_mode && !self.expanded && self.toast.is_none() && since > Duration::from_millis(60))
             || (idle_anim && since > Duration::from_millis(200))
             || (visual_live && since > Duration::from_millis(33))
             || since > Duration::from_millis(1000)
@@ -1007,6 +1044,37 @@ impl App {
         Rect { x: cx - w / 2.0 - 16.0, y: 0.0, w: w + 32.0, h: h + self.y_off.value }
     }
 
+    /// The area the pointer has to be over to open the notch.
+    ///
+    /// Closed down to a dot, the dot itself is the target: hovering "near" it must not open
+    /// the island, so the hit box follows the drawn dot (a couple of px of slack) instead of a
+    /// generous neighbourhood. In every other state the whole pill is the target.
+    pub fn hover_rect(&self) -> Rect {
+        let cx = WIN_W / 2.0;
+        let dot = self.settings.dot_mode
+            && !self.expanded
+            && self.toast.is_none()
+            && self.hud.is_none()
+            && !self.ai_busy();
+        if dot {
+            // the dot as it is drawn: `w.value.max(12)` wide, `h.value.max(4)` tall
+            let (cw, ch) = self.collapsed_size();
+            let dw = cw.max(12.0);
+            let dh = ch.max(4.0);
+            let pad = 2.0;
+            // a floating island dot sits at `y_off`, a notch dot hangs from the top edge
+            let (top, bottom) = if self.settings.floating {
+                (self.y_off.value - pad, self.y_off.value + dh + pad)
+            } else {
+                (0.0, dh + 4.0)
+            };
+            Rect { x: cx - dw / 2.0 - pad, y: top, w: dw + pad * 2.0, h: bottom - top }
+        } else {
+            let (hw, hh) = (self.w.target.max(self.w.value), self.h.target.max(self.h.value));
+            Rect { x: cx - hw / 2.0 - 4.0, y: -400.0, w: hw + 8.0, h: hh + 400.0 + self.y_off.value + 4.0 }
+        }
+    }
+
     fn poll_input(&mut self, now: Instant) {
         unsafe {
             let mut p = POINT::default();
@@ -1014,11 +1082,7 @@ impl App {
             let lx = (p.x - self.win_px.0) as f32 / self.scale;
             let ly = (p.y - self.win_px.1) as f32 / self.scale;
             self.mouse = (lx, ly);
-            let cx = WIN_W / 2.0;
-            // a dot is tiny: give it a generous hover target
-            let (min_w, min_h) = if self.settings.dot_mode && !self.expanded { (50.0, 24.0) } else { (0.0, 0.0) };
-            let (hw, hh) = (self.w.target.max(self.w.value).max(min_w), self.h.target.max(self.h.value).max(min_h));
-            let r = Rect { x: cx - hw / 2.0 - 4.0, y: -400.0, w: hw + 8.0, h: hh + 400.0 + self.y_off.value + 4.0 };
+            let r = self.hover_rect();
             let inside = r.contains(lx, ly);
             self.mouse_in = inside;
 
@@ -1140,7 +1204,15 @@ impl App {
 
         g.push_clip(l - 1.0, yo, w + 2.0, h + 1.0);
         if self.toast.is_some() && !self.expanded {
+            // prayer motion graphic is clipped to the notch's own rounded shape
+            let shaped = self.toast.as_ref().map(|t| t.tag == 3).unwrap_or(false) && geo_keep.is_some();
+            if shaped {
+                g.push_geo_clip(geo_keep.as_ref().unwrap());
+            }
             self.draw_toast(l, yo, w, h);
+            if shaped {
+                g.pop_layer();
+            }
         } else if self.hud.is_some() && !self.expanded {
             self.draw_hud(l, yo, w, h);
         } else {
@@ -1156,6 +1228,9 @@ impl App {
                         g.text(&label, dx - 12.0, dy - 8.0, 24.0, 16.0, 10.0, 700, WHITE.a(da), Align::Center);
                     }
                 }
+            }
+            if self.settings.dot_mode && !self.expanded && self.tour.is_none() && !self.ai_busy() {
+                self.draw_dot_eyes(l, yo, w, h);
             }
             if ca > 0.01 {
                 if isl {
@@ -1315,11 +1390,63 @@ impl App {
         g.text(&shown, cx - w / 2.0 + 38.0, cy - 10.0, w - 46.0, 20.0, 13.5, 600, WHITE.a(a), Align::Center);
     }
 
+    /// How closed the eyelids are right now, 0 (open) .. 1 (shut). Soft, irregular blinks:
+    /// a single blink most cycles, a quick double blink every third one, a lazy slow one every fifth.
+    pub fn eyelid(&self) -> f32 {
+        let t = self.last.duration_since(self.start).as_secs_f32();
+        let period = 3.9;
+        let cycle = (t / period).floor() as u32;
+        let ph = t % period;
+        let pulse = |start: f32, dur: f32| -> f32 {
+            let x = (ph - start) / dur;
+            if x <= 0.0 || x >= 1.0 { 0.0 } else { let v = (x * std::f32::consts::PI).sin(); v * v }
+        };
+        let base = period - 0.6;
+        if cycle % 5 == 4 {
+            pulse(base - 0.15, 0.55) // sleepy slow blink
+        } else if cycle % 3 == 2 {
+            pulse(base, 0.2).max(pulse(base + 0.27, 0.2)) // double blink
+        } else {
+            pulse(base, 0.22)
+        }
+    }
+
+    /// Cute eyes on the closed dot: they blink softly, glance around on their own and drift toward the cursor.
+    pub fn draw_dot_eyes(&self, l: f32, yo: f32, w: f32, h: f32) {
+        let g = &self.gfx;
+        let t = self.last.duration_since(self.start).as_secs_f32();
+        let appear = ((w - 18.0) / 10.0).clamp(0.0, 1.0);
+        if appear < 0.02 {
+            return;
+        }
+        let cx = l + w / 2.0;
+        let cy = yo + h / 2.0 + if self.settings.island { 0.0 } else { -0.5 };
+        let open = 1.0 - self.eyelid();
+        // idle glances: slow wandering, plus a pull toward the mouse
+        let wx = (t * 0.7).sin() * 0.7 + (t * 0.23).sin() * 0.5;
+        let mx = ((self.mouse.0 - cx) / 260.0).clamp(-1.0, 1.0) * 1.8;
+        let my = ((self.mouse.1 - cy) / 120.0).clamp(-1.0, 1.0) * 0.8;
+        let near = ((self.mouse.1 - cy).abs() < 220.0) as i32 as f32;
+        let (dx, dy) = (wx * (1.0 - near * 0.6) + mx * near, my * near);
+        let (ew, eh) = if self.settings.island { (5.2, 7.6) } else { (4.2, 5.6) };
+        let gap = if self.settings.island { 4.2 } else { 4.0 };
+        for sgn in [-1.0f32, 1.0] {
+            let ex = cx + sgn * (ew / 2.0 + gap / 2.0) + dx;
+            let hh = (eh * (0.25 + 0.75 * open)).max(1.3);
+            let ey = cy + dy * 0.6 + (eh - hh) * 0.15;
+            g.fill_round(ex - ew / 2.0, ey - hh / 2.0, ew, hh, (ew.min(hh)) / 2.0, WHITE.a(0.95 * appear));
+            if open > 0.5 && hh > 4.0 {
+                // tiny shine so they feel alive
+                g.fill_circle(ex - ew * 0.15, ey - hh * 0.22, 0.9, Color::rgba(190, 215, 255, 0.9 * appear * ((open - 0.5) * 2.0)));
+            }
+        }
+    }
+
     /// A tiny blob that blinks and glances toward the cursor.
     pub fn draw_mascot(&self, cx: f32, cy: f32, a: f32) {
         let g = &self.gfx;
         let t = self.last.duration_since(self.start).as_secs_f32();
-        let blink = (t % 4.3) > 4.15;
+        let open = 1.0 - self.eyelid();
         let bob = (t * 1.6).sin() * 0.6;
         let cy = cy + bob;
         g.fill_round(cx - 8.0, cy - 6.5, 16.0, 13.0, 6.5, Color::rgba(170, 142, 255, a));
@@ -1328,11 +1455,10 @@ impl App {
         let dx = ((self.mouse.0 - cx) / 220.0).clamp(-1.0, 1.0) * 0.9;
         let dy = ((self.mouse.1 - cy) / 120.0).clamp(-1.0, 1.0) * 0.7;
         for ex in [-3.2f32, 3.2] {
-            if blink {
-                g.fill_round(cx + ex - 2.0, cy - 0.3, 4.0, 1.0, 0.5, BLACK.a(0.8 * a));
-            } else {
-                g.fill_circle(cx + ex, cy - 0.5, 2.3, WHITE.a(a));
-                g.fill_circle(cx + ex + dx, cy - 0.5 + dy, 1.1, BLACK.a(a));
+            let hh = (4.6 * open).max(1.0);
+            g.fill_round(cx + ex - 2.3, cy - 0.5 - hh / 2.0, 4.6, hh, hh.min(4.6) / 2.0, WHITE.a(a));
+            if open > 0.55 {
+                g.fill_circle(cx + ex + dx, cy - 0.5 + dy, 1.1 * open, BLACK.a(a * ((open - 0.55) / 0.45).clamp(0.0, 1.0)));
             }
         }
     }
@@ -1401,7 +1527,7 @@ impl App {
         let kinds = self.pages();
         let lv = if self.lyrics_view && self.settings.lyrics { (1.0 - self.page_pos.value).clamp(0.0, 1.0) } else { 0.0 };
 
-        // header, right aligned to the content edge: ring | date | clock
+        // header: centered battery ring + date, right-aligned clock + bars
         // On the Assistant page, the assistant renders its own header (title, status, clock, clear)
         let is_ai = kinds.get(self.page) == Some(&PageKind::Assistant);
         let ha = a * (1.0 - lv);
@@ -1411,13 +1537,21 @@ impl App {
             self.draw_bars(l + w - 58.0, hy, ha * if self.is_playing() { 1.0 } else { 0.5 });
             let clock = self.clock_text();
             g.text(&clock, right - 52.0, hy - 10.0, 52.0, 20.0, 14.5, 700, WHITE.a(ha), Align::Right);
+
+            // Centered date and battery ring
             let n = sys::now();
             let date = format!("{} {} {} {}", sys::DOW[n.dow as usize], n.day, sys::MON[(n.month - 1) as usize], n.year);
-            let dr = right - 52.0 - 8.0;
-            g.text(&date, dr - 150.0, hy - 10.0, 150.0, 20.0, 12.5, 500, WHITE.a(0.62 * ha), Align::Right);
-            if self.settings.status_ring {
-                self.draw_ring(dr - g.measure(&date, 12.5, 500) - 14.0, hy, ha);
+            let date_w = g.measure(&date, 12.5, 500);
+            let show_ring = self.settings.status_ring;
+            let ring_w = if show_ring { 13.0 + 8.0 } else { 0.0 };
+            let total_w = ring_w + date_w;
+            let mid_x = l + w / 2.0;
+            let start_x = mid_x - total_w / 2.0;
+
+            if show_ring {
+                self.draw_ring(start_x + 6.5, hy, ha);
             }
+            g.text(&date, start_x + ring_w, hy - 10.0, date_w + 4.0, 20.0, 12.5, 500, WHITE.a(0.65 * ha), Align::Left);
         }
 
         // pages (slide + fade); clipped above the dock so a sliding page never covers it
@@ -1490,9 +1624,10 @@ impl App {
         let cur_y = cy - cur_h / 2.0;
         let bg_a = smoothstep(0.06, 0.70, dock_t) * a;
         if bg_a > 0.01 {
-            g.fill_round(cur_x, cur_y, cur_w, cur_h, cur_r, Color::rgba(18, 18, 22, 0.90 * bg_a));
-            g.fill_round(cur_x, cur_y, cur_w, cur_h, cur_r, WHITE.a(0.05 * bg_a));
-            g.stroke_round(cur_x, cur_y, cur_w, cur_h, cur_r, 1.0, WHITE.a(0.12 * bg_a));
+            // the bar is black like the panel body it sits on - no white wash, just a faint
+            // outline so the hovered state still reads as a separate bar
+            g.fill_round(cur_x, cur_y, cur_w, cur_h, cur_r, Color::rgba(0, 0, 0, 0.92 * bg_a));
+            g.stroke_round(cur_x, cur_y, cur_w, cur_h, cur_r, 1.0, WHITE.a(0.10 * bg_a));
         }
 
         // 4. Compact dots + active dash indicator (fades out as dock opens)
@@ -1748,6 +1883,18 @@ impl App {
             self.pray_scroll.target = (self.pray_scroll.target - delta as f32 / 120.0 * 44.0).clamp(0.0, max);
             self.dirty.set(true);
             return;
+        }
+        // the task list scrolls with the wheel while hovering its panel
+        if self.expanded && self.tour.is_none() && self.pages().get(self.page) == Some(&PageKind::Todo) && self.store.todos.len() > 3 {
+            let (mx, my) = self.mouse;
+            let l = WIN_W / 2.0 - EXP_W / 2.0 + PAGE_PAD;
+            let yo = self.y_off.value;
+            if mx > l + 190.0 && my > yo + 24.0 && my < yo + 130.0 {
+                let max = (self.store.todos.len() as f32 - 3.0) * 23.0;
+                self.todo_scroll.target = (self.todo_scroll.target - delta as f32 / 120.0 * 23.0).clamp(0.0, max);
+                self.dirty.set(true);
+                return;
+            }
         }
         // a long assistant answer scrolls under the wheel
         if self.expanded && self.tour.is_none() && self.pages().get(self.page) == Some(&PageKind::Assistant) {

@@ -431,12 +431,12 @@ impl App {
             let idx = lead + day - 1;
             let (r, c) = (idx / 7, idx % 7);
             let cx = x0 + c as f32 * cell + 4.0;
-            let cyy = top + 28.0 + r as f32 * 11.0;
+            let cyy = top + 28.0 + r as f32 * 13.0;
             let today = cy == n.year && cm == n.month && day as u32 == n.day;
             if today {
-                g.fill_round(cx - 8.0, cyy - 5.0, 18.0, 10.0, 5.0, GREEN.a(a));
+                g.fill_round(cx - 8.0, cyy - 6.0, 18.0, 12.0, 6.0, GREEN.a(a));
             }
-            self.t(&day.to_string(), cx - 8.0, cyy, 18.0, 9.0, if today { 700 } else { 500 }, WHITE.a(if today { 1.0 } else { 0.8 } * a), Align::Center);
+            self.t(&day.to_string(), cx - 8.0, cyy, 18.0, 11.0, if today { 700 } else { 600 }, WHITE.a(if today { 1.0 } else { 0.8 } * a), Align::Center);
         }
         self.hit(Rect { x: x0 - 6.0, y: top - 8.0, w: 120.0, h: 16.0 }, Act::CalToday);
         // today panel
@@ -774,9 +774,24 @@ impl App {
         } else {
             let mut order: Vec<usize> = (0..total).collect();
             order.sort_by_key(|i| todos[*i].done);
-            for (row, i) in order.iter().take(3).enumerate() {
+            let rh = 23.0;
+            let max = ((total as f32 - 3.0) * rh).max(0.0);
+            let sc = self.todo_scroll.value.clamp(0.0, max);
+            let (cy0, cy1) = (py + 6.0, py + ph - 14.0);
+            g.push_round_clip(px, py, pw, ph, 18.0);
+            if self.todo_ha.value > 0.01 {
+                g.fill_round(px + 6.0, self.todo_hy.value - 10.0, pw - 12.0, 20.0, 10.0, WHITE.a(0.09 * self.todo_ha.value * a));
+            }
+            for (row, i) in order.iter().enumerate() {
                 let t = &todos[*i];
-                let y = py + 20.0 + row as f32 * 23.0;
+                let y = py + 20.0 + row as f32 * rh - sc;
+                if y + 10.0 < cy0 || y - 10.0 > cy1 {
+                    continue;
+                }
+                // fade rows as they slide under the top / bottom edge
+                let edge = ((y - cy0 + 6.0) / 14.0).clamp(0.0, 1.0).min(((cy1 - y + 10.0) / 14.0).clamp(0.0, 1.0));
+                let a = a * edge;
+                let hot = self.hovered(Rect { x: px + 6.0, y: y - 10.0, w: pw - 12.0, h: 20.0 });
                 if self.todo_sel == Some(*i) {
                     g.fill_round(px + 6.0, y - 10.0, pw - 12.0, 20.0, 10.0, WHITE.a(0.10 * a));
                 }
@@ -786,16 +801,40 @@ impl App {
                 } else {
                     g.stroke_circle(px + 20.0, y, 6.5, 1.5, WHITE.a(0.55 * a));
                 }
-                let title = g.fit(&t.title, 12.5, 500, 100.0);
-                self.t(&title, px + 34.0, y, 108.0, 12.5, 500, WHITE.a(if t.done { 0.4 } else { 0.95 } * a), Align::Left);
-                if let Some(m) = t.time {
-                    self.t(&format!("{:02}:{:02}", m / 60, m % 60), px + pw - 52.0, y, 40.0, 10.5, 500, DIM.a(a), Align::Right);
+                let tc = WHITE.a(if t.done { 0.4 } else { 0.95 } * a);
+                let full = g.measure(&t.title, 12.5, 500);
+                if hot && full > 108.0 {
+                    // hovering a long title: slide it sideways so the whole text can be read
+                    let over = full - 120.0;
+                    let ph_ = (self.start.elapsed().as_secs_f32() * 0.35).fract();
+                    let k = if ph_ < 0.15 { 0.0 } else if ph_ < 0.5 { (ph_ - 0.15) / 0.35 } else if ph_ < 0.65 { 1.0 } else { 1.0 - (ph_ - 0.65) / 0.35 };
+                    let k = k * k * (3.0 - 2.0 * k);
+                    g.push_clip(px + 34.0, y - 10.0, pw - 44.0, 20.0);
+                    self.t(&t.title, px + 34.0 - over.max(0.0) * k, y, full + 8.0, 12.5, 500, tc, Align::Left);
+                    g.pop_clip();
+                    self.dirty.set(true);
+                } else {
+                    let title = g.fit(&t.title, 12.5, 500, if t.time.is_some() { 100.0 } else { 128.0 });
+                    self.t(&title, px + 34.0, y, 130.0, 12.5, 500, tc, Align::Left);
+                    if let Some(m) = t.time {
+                        self.t(&format!("{:02}:{:02}", m / 60, m % 60), px + pw - 52.0, y, 40.0, 10.5, 500, DIM.a(a), Align::Right);
+                    }
                 }
-                self.hit(Rect { x: px + 30.0, y: y - 10.0, w: pw - 36.0, h: 20.0 }, Act::TodoSelect(*i));
-                self.hit(Rect { x: px + 8.0, y: y - 10.0, w: 24.0, h: 20.0 }, Act::TodoToggle(*i));
+                if y - 10.0 >= cy0 - 4.0 && y + 10.0 <= cy1 + 12.0 {
+                    self.hit(Rect { x: px + 30.0, y: y - 10.0, w: pw - 36.0, h: 20.0 }, Act::TodoSelect(*i));
+                    self.hit(Rect { x: px + 8.0, y: y - 10.0, w: 24.0, h: 20.0 }, Act::TodoToggle(*i));
+                }
             }
+            g.pop_layer();
             if total > 3 {
-                self.t(&format!("+{} more", total - 3), px, py + ph - 9.0, pw, 9.5, 500, DIM.a(a), Align::Center);
+                // scrollbar + position hint
+                let th = (cy1 - cy0) * 3.0 / total as f32;
+                let ty = cy0 + (cy1 - cy0 - th) * (sc / max);
+                g.fill_round(px + pw - 5.0, ty, 2.5, th, 1.2, WHITE.a(0.35 * a));
+                let first = (sc / rh).round() as usize + 1;
+                let hint = if self.hovered(Rect { x: px, y: py, w: pw, h: ph }) { "  \u{b7} scroll" } else { "" };
+                let txt = format!("{}-{} of {}{}", first, (first + 2).min(total), total, hint);
+                self.t(&txt, px, py + ph - 8.0, pw, 9.5, 500, DIM.a(a), Align::Center);
             }
         }
     }
@@ -1203,6 +1242,10 @@ impl App {
         let g = &self.gfx;
         let Some(t) = &self.toast else { return };
         let cy = yo + h / 2.0;
+        if t.tag == 3 {
+            self.draw_prayer_toast(t, l, yo, w, h);
+            return;
+        }
         g.fill_circle(l + 34.0, cy, 17.0, t.color.a(0.2));
         g.icon(t.icon, l + 34.0, cy, 15.0, t.color);
         self.t(&t.title, l + 62.0, cy - 10.0, w - 190.0, 13.0, 700, WHITE, Align::Left);
@@ -1220,6 +1263,96 @@ impl App {
             x -= bw;
             self.pill_btn(s, x, cy - 11.0, bw, 1.0, Act::ToastA, false);
         }
+    }
+
+    /// Prayer-time toast as a short motion graphic: shockwave + light sweep intro, popping crescent with
+    /// rotating rays, staggered text slide-in, rising stars, glowing countdown line, soft fade-out.
+    /// Everything is drawn inside the notch's own shape (the caller clips to it).
+    fn draw_prayer_toast(&self, t: &Toast, l: f32, yo: f32, w: f32, h: f32) {
+        let g = &self.gfx;
+        let tm = self.start.elapsed().as_secs_f32();
+        let total = if t.title.contains("in 10") { 8.0 } else { 10.0 };
+        let left = t.until.saturating_duration_since(Instant::now()).as_secs_f32();
+        let e = (total - left).max(0.0); // seconds since the toast appeared
+        let ease_out = |x: f32| { let x = x.clamp(0.0, 1.0); 1.0 - (1.0 - x).powi(3) };
+        let back = |x: f32| { let x = x.clamp(0.0, 1.0) - 1.0; 1.0 + 2.70158 * x.powi(3) + 1.70158 * x.powi(2) };
+        let fade_out = (left / 0.5).clamp(0.0, 1.0);
+        let teal = Color::rgb(32, 201, 166);
+        let gold = t.color;
+        let cx = l + 50.0;
+        let cy = yo + h / 2.0 - 4.0;
+
+        // background aurora, breathing
+        let br = 0.5 + 0.5 * (tm * 1.6).sin();
+        g.glow(cx, cy, 80.0 + br * 14.0, teal.a((0.20 + 0.12 * br) * ease_out(e / 0.5) * fade_out));
+        g.glow(l + w - 30.0 + (tm * 0.7).sin() * 16.0, yo + h * 0.9, 120.0, gold.a(0.14 * ease_out(e / 0.8) * fade_out));
+
+        // rising stars
+        for k in 0..12 {
+            let kf = k as f32;
+            let sp = 0.10 + (kf * 0.37).fract() * 0.10;
+            let ph = (tm * sp + kf * 0.173).fract();
+            let x = l + 90.0 + (kf * 0.618).fract() * (w - 130.0) + (tm * 0.8 + kf).sin() * 4.0;
+            let y = yo + h - 10.0 - ph * (h - 18.0);
+            let env = (ph * std::f32::consts::PI).sin();
+            g.fill_circle(x, y, 0.9 + (kf * 0.31).fract() * 0.9, WHITE.a(0.55 * env * fade_out * ease_out(e / 0.6)));
+        }
+
+        // intro shockwaves
+        for k in 0..2 {
+            let x = (e - 0.05 - k as f32 * 0.18) / 0.9;
+            if x > 0.0 && x < 1.0 {
+                g.stroke_circle(cx, cy, 14.0 + ease_out(x) * (w * 0.55), 2.0 * (1.0 - x) + 0.4, teal.mix(WHITE, 0.3).a((1.0 - x) * 0.7));
+            }
+        }
+
+        // rotating rays + orbit ring around the crescent
+        let pop = back(e / 0.55);
+        let ia = ease_out(e / 0.3) * fade_out;
+        for k in 0..12 {
+            let ang = tm * 0.9 + k as f32 * std::f32::consts::TAU / 12.0;
+            let (r0, r1) = (26.0 * pop, (30.0 + if k % 2 == 0 { 8.0 } else { 4.0 }) * pop);
+            g.line(cx + ang.cos() * r0, cy + ang.sin() * r0, cx + ang.cos() * r1, cy + ang.sin() * r1, 1.4, gold.a(0.75 * ia));
+        }
+        g.stroke_circle(cx, cy, 23.0 * pop, 1.2, teal.a(0.5 * ia));
+        let oa = tm * 2.2;
+        g.fill_circle(cx + oa.cos() * 23.0 * pop, cy + oa.sin() * 23.0 * pop, 2.2, WHITE.a(0.9 * ia));
+        g.fill_circle(cx, cy, 20.0 * pop, Color::rgb(12, 38, 36).a(ia));
+        g.glow(cx, cy, 26.0 * pop, gold.a((0.32 + 0.12 * (tm * 3.0).sin()) * ia));
+        g.scale_about(cx, cy, pop.max(0.01));
+        g.icon(t.icon, cx, cy, 22.0, WHITE.a(ia));
+        g.reset_transform();
+
+        // staggered text slide-in
+        let tx = l + 96.0;
+        let tw_ = w - 96.0 - 26.0;
+        let t1 = ease_out((e - 0.20) / 0.5);
+        let t2 = ease_out((e - 0.38) / 0.5);
+        let title = g.fit(&t.title, 18.0, 800, tw_);
+        self.t(&title, tx - (1.0 - t1) * 34.0, cy - 9.0, tw_ + 40.0, 18.0, 800, WHITE.a(t1 * fade_out), Align::Left);
+        let body = g.fit(&t.body, 11.5, 500, tw_);
+        self.t(&body, tx - (1.0 - t2) * 34.0, cy + 12.0, tw_ + 40.0, 11.5, 500, teal.mix(WHITE, 0.45).a(t2 * fade_out), Align::Left);
+
+        // light sweep
+        let sx = (e - 0.1) / 0.8;
+        if sx > 0.0 && sx < 1.0 {
+            let x = l - 60.0 + (w + 120.0) * ease_out(sx);
+            g.fill_round_hgrad(x - 40.0, yo, 40.0, h, 0.0, WHITE.a(0.0), WHITE.a(0.20));
+            g.fill_round_hgrad(x, yo, 40.0, h, 0.0, WHITE.a(0.20), WHITE.a(0.0));
+        }
+
+        // countdown line with a glowing head
+        let f = (left / total).clamp(0.0, 1.0);
+        let (bx, by, bw) = (l + 34.0, yo + h - 13.0, w - 68.0);
+        let grow = ease_out((e - 0.3) / 0.5);
+        g.fill_round(bx, by, bw * grow, 3.0, 1.5, WHITE.a(0.10 * fade_out));
+        let fw = (bw * f * grow).max(0.0);
+        if fw > 3.0 {
+            g.fill_round_hgrad(bx, by, fw, 3.0, 1.5, teal, gold);
+            g.glow(bx + fw, by + 1.5, 9.0, gold.a(0.8 * fade_out));
+            g.fill_circle(bx + fw, by + 1.5, 2.2, WHITE.a(fade_out));
+        }
+        self.dirty.set(true);
     }
 
     pub fn draw_hud(&self, l: f32, yo: f32, w: f32, h: f32) {

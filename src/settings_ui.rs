@@ -22,7 +22,7 @@ use crate::prayer;
 use crate::store::Todo;
 use crate::sys;
 
-const BG: Color = Color::rgba(3, 3, 6, 0.80);
+const BG: Color = Color::rgba(0, 0, 0, 1.0);
 const RAIL: Color = Color::rgba(0, 0, 0, 0.34);
 const CARD: Color = Color::rgba(255, 255, 255, 0.045);
 const CARD_HI: Color = Color::rgba(255, 255, 255, 0.12);
@@ -76,7 +76,7 @@ impl<'a> Ui<'a> {
         let k = h.finish();
         let mut m = self.anim.borrow_mut();
         let v = m.entry(k).or_insert(target);
-        let f = 1.0 - (-16.0 * self.dt).exp();
+        let f = 1.0 - (-24.0 * self.dt).exp();
         *v += (target - *v) * f;
         if (target - *v).abs() < 0.003 {
             *v = target;
@@ -430,14 +430,11 @@ fn glass_box(g: &Gfx, x: f32, y: f32, w: f32, h: f32) {
     }
 }
 
-/// The window body: near-black tint over the system acrylic, a top sheen, a faint light bloom and a
-/// specular rim around the whole window. `w`/`h` are the client size in DIPs.
+/// The window body: solid black, no sheen or bloom. `w`/`h` are the client size in DIPs.
 fn glass_window(g: &Gfx, w: f32, h: f32) {
     g.fill_rect(0.0, 0.0, w + 400.0, h + 400.0, BG);
-    g.vgradient(0.0, 0.0, w, h * 0.40, Color::rgba(255, 255, 255, 0.05), Color::rgba(255, 255, 255, 0.0));
-    g.glow(w * 0.30, -30.0, 380.0, Color::rgba(255, 255, 255, 0.045));
     if let Ok(geo) = g.pill_geometry(0.5, 0.5, w - 1.0, h - 1.0, 8.0) {
-        g.stroke_geo_grad(&geo, (0.0, 0.0), (w, h), &[(0.0, Color::rgba(255, 255, 255, 0.30)), (0.35, Color::rgba(255, 255, 255, 0.07)), (1.0, Color::rgba(255, 255, 255, 0.18))], 1.0);
+        g.stroke_geo_grad(&geo, (0.0, 0.0), (w, h), &[(0.0, Color::rgba(255, 255, 255, 0.08)), (0.35, Color::rgba(255, 255, 255, 0.03)), (1.0, Color::rgba(255, 255, 255, 0.06))], 1.0);
     }
 }
 
@@ -471,6 +468,7 @@ pub struct Panel {
     scale: f32,
     tab: usize,
     scroll: f32,
+    scroll_t: f32,
     content_h: f32,
     mouse: (f32, f32),
     click: Option<(f32, f32)>,
@@ -508,14 +506,19 @@ fn dpi_scale(hwnd: HWND) -> f32 {
 
 fn dark_frame(hwnd: HWND) {
     unsafe {
-        // Windows 11 acrylic backdrop behind a transparent client area = liquid-glass window
-        let backdrop: i32 = 3; // DWMSBT_TRANSIENTWINDOW
+        // Opaque black client: no acrylic showing through the window.
+        let backdrop: i32 = 1; // DWMSBT_NONE
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_SYSTEMBACKDROP_TYPE, &backdrop as *const _ as *const _, 4);
         let m = windows::Win32::UI::Controls::MARGINS { cxLeftWidth: -1, cxRightWidth: -1, cyTopHeight: -1, cyBottomHeight: -1 };
         let _ = DwmExtendFrameIntoClientArea(hwnd, &m);
         let on: i32 = 1;
         let _ = DwmSetWindowAttribute(hwnd, DWMWA_USE_IMMERSIVE_DARK_MODE, &on as *const _ as *const _, 4);
-
+        // COLORREF values: 0x00BBGGRR. Black caption and border, white caption text.
+        let black: u32 = 0x00000000;
+        let white: u32 = 0x00FFFFFF;
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_CAPTION_COLOR, &black as *const _ as *const _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_BORDER_COLOR, &black as *const _ as *const _, 4);
+        let _ = DwmSetWindowAttribute(hwnd, DWMWA_TEXT_COLOR, &white as *const _ as *const _, 4);
     }
 }
 
@@ -593,7 +596,7 @@ pub fn open() {
         };
         let logo = gfx.bitmap_from_bytes(include_bytes!("../assets/logo128.png"));
         let dbg_tab: usize = std::env::var("NOOK_DEBUG_TAB").ok().and_then(|v| v.parse().ok()).unwrap_or(0);
-        let p = Box::new(Panel { hwnd, gfx, scale: s, tab: dbg_tab.min(13), scroll: std::env::var("NOOK_DEBUG_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0), content_h: 0.0, mouse: (-1.0, -1.0), click: None, side: 0, pray_sel: 0, anim: RefCell::new(HashMap::new()), moving: Cell::new(false), last: Instant::now(), tab_t: 1.0, rail_y: RAIL_TOP + ITEM_H * dbg_tab.min(13) as f32, logo, search: std::env::var("NOOK_DEBUG_SEARCH").unwrap_or_default(), pray_view: usize::MAX, sel_sec: 0, titles: RefCell::new(vec![]), confirm_reset: None, cpu_at: Instant::now(), cpu_ms: 0.0, cpu_pct: 0.0 });
+        let p = Box::new(Panel { hwnd, gfx, scale: s, tab: dbg_tab.min(13), scroll: std::env::var("NOOK_DEBUG_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0), scroll_t: std::env::var("NOOK_DEBUG_SCROLL").ok().and_then(|v| v.parse().ok()).unwrap_or(0.0), content_h: 0.0, mouse: (-1.0, -1.0), click: None, side: 0, pray_sel: 0, anim: RefCell::new(HashMap::new()), moving: Cell::new(false), last: Instant::now(), tab_t: 1.0, rail_y: RAIL_TOP + ITEM_H * dbg_tab.min(13) as f32, logo, search: std::env::var("NOOK_DEBUG_SEARCH").unwrap_or_default(), pray_view: usize::MAX, sel_sec: 0, titles: RefCell::new(vec![]), confirm_reset: None, cpu_at: Instant::now(), cpu_ms: 0.0, cpu_pct: 0.0 });
         PANEL = Box::into_raw(p);
         SetTimer(hwnd, 7, 16, None);
         let _ = ShowWindow(hwnd, SW_SHOW);
@@ -706,7 +709,7 @@ unsafe extern "system" fn settings_proc(hwnd: HWND, msg: u32, wp: WPARAM, lp: LP
         WM_MOUSEWHEEL => {
             let d = ((wp.0 >> 16) & 0xFFFF) as i16 as f32;
             let max = (p.content_h - (H - 4.0)).max(0.0);
-            p.scroll = (p.scroll - d / 120.0 * 48.0).clamp(0.0, max);
+            p.scroll_t = (p.scroll_t - d / 120.0 * 64.0).clamp(0.0, max);
             let _ = InvalidateRect(hwnd, None, false);
             LRESULT(0)
         }
@@ -739,6 +742,16 @@ impl Panel {
         let dt = now.duration_since(self.last).as_secs_f32().min(0.1);
         self.last = now;
         self.moving.set(false);
+        {
+            let max = (self.content_h - (H - 4.0)).max(0.0);
+            self.scroll_t = self.scroll_t.clamp(0.0, max);
+            self.scroll += (self.scroll_t - self.scroll) * (1.0 - (-22.0 * dt).exp());
+            if (self.scroll_t - self.scroll).abs() < 0.2 {
+                self.scroll = self.scroll_t;
+            } else {
+                self.moving.set(true);
+            }
+        }
         let sysinfo = self.sample_sys();
         *SYSINFO.lock().unwrap() = sysinfo;
         let g = &self.gfx;
@@ -755,7 +768,7 @@ impl Panel {
         g.fill_circle(38.0, 76.0, 2.0, ACCENT);
 
         let target_y = RAIL_TOP + ITEM_H * self.tab as f32;
-        self.rail_y += (target_y - self.rail_y) * (1.0 - (-18.0 * dt).exp());
+        self.rail_y += (target_y - self.rail_y) * (1.0 - (-26.0 * dt).exp());
         if (target_y - self.rail_y).abs() > 0.3 {
             self.moving.set(true);
         } else {
@@ -780,6 +793,7 @@ impl Panel {
                         self.tab_t = 0.0;
                         self.sel_sec = 0;
                         self.scroll = 0.0;
+                        self.scroll_t = 0.0;
                         self.titles.borrow_mut().clear();
                         FOCUS.store(0, AOrd::Relaxed);
                     }
@@ -794,7 +808,7 @@ impl Panel {
         g.stroke_round(8.5, H - 91.5, 59.0, 73.0, 18.0, 1.0, Color::rgba(255, 255, 255, 0.10));
         g.fill_circle(38.0, H - 70.0, 5.0, Color::rgb(48, 209, 88));
         g.text(&format!("v{}", crate::update::VERSION), 8.0, H - 56.0, 60.0, 22.0, 11.0, 600, TEXT, Align::Center);
-        self.tab_t += (1.0 - self.tab_t) * (1.0 - (-12.0 * dt).exp());
+        self.tab_t += (1.0 - self.tab_t) * (1.0 - (-18.0 * dt).exp());
         if self.tab_t < 0.995 {
             self.moving.set(true);
         } else {
@@ -829,6 +843,7 @@ impl Panel {
                     if self.sel_sec != i {
                         self.sel_sec = i;
                         self.scroll = 0.0;
+                        self.scroll_t = 0.0;
                         self.tab_t = 0.0;
                         FOCUS.store(0, AOrd::Relaxed);
                     }
@@ -911,6 +926,12 @@ impl Panel {
         self.click = None;
         let _ = click_left;
         let _ = self.gfx.end_overlay();
+        if self.moving.get() {
+            // keep painting back-to-back; Present(1) paces this to the display refresh (144 Hz etc.)
+            unsafe {
+                let _ = InvalidateRect(self.hwnd, None, false);
+            }
+        }
         if changed {
             a.apply_settings();
             unsafe {

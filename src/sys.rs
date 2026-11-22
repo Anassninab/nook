@@ -204,12 +204,40 @@ pub fn key_tap(vk: VIRTUAL_KEY) {
     }
 }
 
+static NOTIF_MP3: &[u8] = include_bytes!("../assets/notif.mp3");
+
+/// Main app notification sound (embedded notif.mp3), played on its own short-lived player.
 pub fn chime(kind: u32) {
-    // Short system chimes without shipping audio assets.
-    std::thread::spawn(move || unsafe {
-        let _ = kind;
-        let _ = windows::Win32::Media::Audio::PlaySoundW(w!("SystemNotification"), None, windows::Win32::Media::Audio::SND_ALIAS | windows::Win32::Media::Audio::SND_ASYNC);
+    let _ = kind;
+    std::thread::spawn(|| {
+        let _ = play_notif();
     });
+}
+
+fn play_notif() -> windows::core::Result<()> {
+    use windows::core::IInspectable;
+    use windows::Foundation::TypedEventHandler;
+    use windows::Media::Core::MediaSource;
+    use windows::Media::Playback::MediaPlayer;
+    use windows::Storage::Streams::{DataWriter, InMemoryRandomAccessStream};
+    let stream = InMemoryRandomAccessStream::new()?;
+    let w = DataWriter::CreateDataWriter(&stream)?;
+    w.WriteBytes(NOTIF_MP3)?;
+    w.StoreAsync()?.get()?;
+    w.DetachStream()?;
+    stream.Seek(0)?;
+    let src = MediaSource::CreateFromStream(&stream, &HSTRING::from("audio/mpeg"))?;
+    let player = MediaPlayer::new()?;
+    let (tx, rx) = std::sync::mpsc::channel::<()>();
+    player.MediaEnded(&TypedEventHandler::<MediaPlayer, IInspectable>::new(move |_, _| {
+        let _ = tx.send(());
+        Ok(())
+    }))?;
+    player.SetSource(&src)?;
+    player.Play()?;
+    let _ = rx.recv_timeout(std::time::Duration::from_secs(12));
+    let _ = player.Close();
+    Ok(())
 }
 
 pub fn open_url(url: &str) {
